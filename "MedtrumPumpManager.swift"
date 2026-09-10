@@ -1,0 +1,101 @@
+import Foundation
+import CoreBluetooth
+import Combine
+
+// Структура для статуса помпы
+struct PumpStatus {
+    var isConnected: Bool = false
+    var batteryLevel: Int = 0
+    var activeBasalRate: Double = 0.0
+    var lastBolusAmount: Double = 0.0
+}
+
+class MedtrumPumpManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+    @Published var status = PumpStatus()
+    @Published var discoveredPeripherals: [CBPeripheral] = []
+    
+    private var centralManager: CBCentralManager!
+    private var pumpPeripheral: CBPeripheral?
+    
+    // UUID сервисов Medtrum (стандартные зарезервированные UUID для помпы)
+    private let pumpServiceUUID = CBUUID(string: "0000FFF0-0000-1000-8000-00805F9B34FB")
+    private let commandCharUUID = CBUUID(string: "0000FFF1-0000-1000-8000-00805F9B34FB")
+    private let responseCharUUID = CBUUID(string: "0000FFF2-0000-1000-8000-00805F9B34FB")
+    
+    private var commandCharacteristic: CBCharacteristic?
+    
+    override init() {
+        super.init()
+        centralManager = CBCentralManager(delegate: self, queue: nil)
+    }
+    
+    func startScanning() {
+        guard centralManager.state == .poweredOn else { return }
+        // Сканируем устройства Medtrum
+        centralManager.scanForPeripherals(withServices: [pumpServiceUUID], options: nil)
+    }
+    
+    func connect(to peripheral: CBPeripheral) {
+        pumpPeripheral = peripheral
+        pumpPeripheral?.delegate = self
+        centralManager.stopScan()
+        centralManager.connect(peripheral, options: nil)
+    }
+    
+    // MARK: - CBCentralManagerDelegate
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state == .poweredOn {
+            startScanning()
+        }
+    }
+    
+    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+        if !discoveredPeripherals.contains(peripheral) {
+            discoveredPeripherals.append(peripheral)
+        }
+    }
+    
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        status.isConnected = true
+        peripheral.discoverServices([pumpServiceUUID])
+    }
+    
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        status.isConnected = false
+    }
+    
+    // MARK: - CBPeripheralDelegate
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard let services = peripheral.services else { return }
+        for service in services where service.uuid == pumpServiceUUID {
+            peripheral.discoverCharacteristics([commandCharUUID, responseCharUUID], for: service)
+        }
+    }
+    
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard let characteristics = service.characteristics else { return }
+        for char in characteristics {
+            if char.uuid == commandCharUUID {
+                commandCharacteristic = char
+            } else if char.uuid == responseCharUUID {
+                // Подписываемся на ответы от помпы
+                peripheral.setNotifyValue(true, for: char)
+            }
+        }
+    }
+    
+    // MARK: - Подача команд
+    
+    /// Подача болюса (Формирование байтового пакета)
+    func deliverBolus(units: Double) {
+        guard let char = commandCharacteristic, let peripheral = pumpPeripheral else { return }
+        
+        // Перевод единиц в байтовый формат (условный пример структуры кастомного протокола)
+        let rawUnits = UInt16(units * 100)
+        var payload = Data([0xAA, 0x01]) // Префикс команды болюса
+        payload.append(contentsOf: withUnsafeBytes(of: rawUnits.littleEndian) { Array($0) })
+        payload.append(0x55) // Стоп-байт
+        
+        peripheral.writeValue(payload, for: char, type: .withResponse)
+    }
+}
