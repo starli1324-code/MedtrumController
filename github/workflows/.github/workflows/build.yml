@@ -1,0 +1,36 @@
+name: Build iOS Medtrum Controller
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: '15.2'
+
+    - name: Build Application
+      run: |
+        xcodebuild -project MedtrumController.xcodeproj \
+                   -scheme MedtrumController \
+                   -sdk iphoneos \
+                   -configuration Release \
+                   CODE_SIGN_IDENTITY="" \
+                   CODE_SIGNING_REQUIRED=NO \
+                   CODE_SIGNING_ALLOWED=NO \
+                   clean build
+
+    - name: Save Build Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: MedtrumController-App
+        path: build/Release-iphoneos/MedtrumController.app
